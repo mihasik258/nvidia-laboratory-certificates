@@ -1,91 +1,42 @@
 import cupy as cp
 import pyproj
+import contextily as ctx
+import datashader as ds
+import datashader.transfer_functions as tf
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 
-# Конвертация координат
-gdf = infected_df.copy()
-cupy_east = cp.asarray(gdf['easting'])
-cupy_north = cp.asarray(gdf['northing'])
+gdf = infected_df.copy(deep=True)
+coord_x = cp.asarray(gdf["easting"].values)
+coord_y = cp.asarray(gdf["northing"].values)
 
-def utm_to_lat_lon(easting, northing):
-    easting_np = cp.asnumpy(easting)
-    northing_np = cp.asnumpy(northing)
-    transformer = pyproj.Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True) 
-    lon_np, lat_np = transformer.transform(easting_np, northing_np)
-    return cp.asarray(lat_np), cp.asarray(lon_np)
+def project_coordinates(x_vals, y_vals):
+    x_cpu = cp.asnumpy(x_vals)
+    y_cpu = cp.asnumpy(y_vals)
+    transformer = pyproj.Transformer.from_crs("EPSG:27700", "EPSG:3857", always_xy=True)
+    lon_cpu, lat_cpu = transformer.transform(x_cpu, y_cpu)
+    return cp.asarray(lat_cpu), cp.asarray(lon_cpu)
 
-gdf['lat'], gdf['long'] = utm_to_lat_lon(cupy_east, cupy_north)
+lat, lon = project_coordinates(coord_x, coord_y)
+gdf["lat_wgs84"] = lat
+gdf["lon_wgs84"] = lon
 
-new_palette = [
-    "#FF5E5B", "#00CECB", "#FFED66", "#6C5B7B", "#355C7D",
-    "#F67280", "#C06C84", "#6C5B7B", "#99B898", "#FECEAB"
-]
+color_set = ["#3366cc", "#66aa00", "#dc3912", "#ff9900", "#109618",
+             "#0099c6", "#ddad4f", "#6a4c93", "#ff6e54", "#a4c2f4"]
 
-infected_palette = [
-    "#F8F3D4", "#F6416C", "#FF9A00", "#00B8A9", "#2D4059"
-]
+cx_data = cxf.DataFrame.from_dataframe(gdf)
 
-cxf_data = cxf.DataFrame.from_dataframe(gdf)
+map_by_cluster = cxf.charts.scatter(x="lon_wgs84", y="lat_wgs84", aggregate_col="cluster",
+                                    aggregate_fn="mean", color_palette=color_set, point_size=5,
+                                    tile_provider="OSM", pixel_shade_type="linear", unselected_alpha=0)
 
-scatter_chart1 = cxf.charts.scatter(
-    x='long', 
-    y='lat', 
-    tile_provider="StamenTonerBackground",
-    aggregate_col='cluster', 
-    pixel_shade_type='density',
-    point_size=8,
-    aggregate_fn='median',
-    color_palette=new_palette,
-    stroke_width=1.5,
-    stroke_color="#FFFFFF",
-    point_shape='triangle',
-    blending_mode='multiply',
-)
+map_by_density = cxf.charts.scatter(x="lon_wgs84", y="lat_wgs84", aggregate_col="infected",
+                                    aggregate_fn="count", point_size=5, tile_provider="OSM",
+                                    pixel_shade_type="linear", unselected_alpha=0)
 
-scatter_chart2 = cxf.charts.scatter(
-    x='long', 
-    y='lat', 
-    tile_provider="CartoDBPositron",
-    aggregate_col='infected', 
-    pixel_shade_type='exponential',
-    point_size=7,
-    aggregate_fn='count',
-    color_palette=infected_palette,
-    stroke_width=0.8,
-    stroke_color="#333333",
-    point_shape='triangle',
-    blending_mode='multiply',
-)
+cluster_filter = cxf.charts.panel_widgets.multi_select(x="cluster")
 
-cluster_selector = cxf.charts.panel_widgets.range_slider(
-    'cluster',
-    min_value=int(gdf['cluster'].min()),
-    max_value=int(gdf['cluster'].max()),
-    step=1,
-    value=[int(gdf['cluster'].min()), int(gdf['cluster'].max())],
-    orientation='vertical',
-    height=300
-)
+dashboard = cx_data.dashboard(charts=[map_by_cluster, map_by_density],
+                              sidebar=[cluster_filter], layout_array=[[1, 2]])
 
-display_mode = cxf.charts.panel_widgets.radio_group(
-    'display_mode',
-    options=['Normal', 'Heatmap Overlay', 'Contour Lines'],
-    value='Normal'
-)
-
-layout_array = [
-    [1],
-    [2]
-]
-
-dash = cxf_data.dashboard(
-    charts=[scatter_chart1, scatter_chart2],
-    sidebar=[cluster_selector, display_mode],
-    layout_array=layout_array,
-    theme="minimal",
-)
-
-dash.app(
-    port=8050,
-    debug=True,
-    mode='inline' if hasattr(cxf, '__file__') else 'external'
-)
+dashboard.app()
